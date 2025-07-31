@@ -1,0 +1,61 @@
+// 📁 pages/api/analyze.js
+import { NextResponse } from 'next/server';
+import { OpenAI } from 'openai';
+import multer from 'multer';
+import pdf from 'pdf-parse';
+import fs from 'fs';
+
+// Configura multer para manejar archivos
+const upload = multer({ dest: '/tmp' });
+
+// Inicializa OpenAI
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).end();
+
+  return new Promise((resolve, reject) => {
+    upload.single('file')(req, {}, async function (err) {
+      if (err || !req.file) return res.status(400).json({ error: 'File upload failed' });
+
+      try {
+        const dataBuffer = fs.readFileSync(req.file.path);
+        const pdfData = await pdf(dataBuffer);
+
+        const prompt = `You are a tender analysis assistant. Read this tender document and output:
+        1. Executive Summary (200 words max)
+        2. Checklist of Legal and Technical Requirements
+        3. Automatic Exclusion Alerts (e.g., turnover, experience)
+        4. Fit score from 0 to 100 for a standard SME
+        
+        Document:
+        ${pdfData.text}`;
+
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4',
+          messages: [
+            { role: 'system', content: 'You are a helpful tender assistant.' },
+            { role: 'user', content: prompt },
+          ],
+        });
+
+        const result = completion.choices[0].message.content;
+
+        fs.unlinkSync(req.file.path); // borra archivo temporal
+
+        res.status(200).json({ analysis: result });
+        resolve();
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Internal server error' });
+        reject(error);
+      }
+    });
+  });
+}
